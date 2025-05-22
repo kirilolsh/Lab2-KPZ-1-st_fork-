@@ -11,10 +11,8 @@ class GameController
 
     public function __construct()
     {
-        // Завантаження конфігурації
         $config = require '../config.php';
 
-        // Ініціалізація PDO-з'єднання з базою даних
         $this->pdo = new PDO(
             "mysql:host={$config['db']['host']};dbname={$config['db']['dbname']};charset=utf8mb4",
             $config['db']['user'],
@@ -22,125 +20,91 @@ class GameController
         );
         $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-        // Ініціалізація моделі гри
         $this->gameModel = new Game($this->pdo);
 
-        // Запуск сесії
         Session::start();
     }
 
-    // Метод для отримання повідомлень чату
     public function getChatMessages($game_id)
     {
         return $this->chatModel->getMessages($game_id);
     }
 
-    // Метод для надсилання повідомлень у чат
     public function sendMessage()
     {
-        // Перевірка автентифікації користувача
         if (!$this->isUserLoggedIn()) {
-            $this->redirectToLogin();
+            return $this->redirectToLogin();
         }
 
-        // Перевірка методу запиту
-        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['message'])) {
-            $message = trim($_POST['message']);
-            if ($message !== '') {
-                $user_id = Session::get('user_id');
-                $username = Session::get('username');
-
-                // Отримання існуючого чату або створення нового
-                $chat = Session::get('chat') ?? [];
-
-                // Додавання нового повідомлення
-                $chat[] = [
-                    'user' => $username,
-                    'message' => $message,
-                    'timestamp' => time()
-                ];
-
-                // Оновлення сесії
-                Session::set('chat', $chat);
-            }
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty(trim($_POST['message']))) {
+            $chat = Session::get('chat') ?? [];
+            $chat[] = [
+                'user' => Session::get('username'),
+                'message' => trim($_POST['message']),
+                'timestamp' => time()
+            ];
+            Session::set('chat', $chat);
         }
 
-        // Повернення до гри
-        header('Location: index.php?action=play');
-        exit;
+        $this->redirect('play');
     }
 
-    // Метод для очищення чату
     public function clearChat()
     {
         if (!$this->isUserLoggedIn()) {
-            $this->redirectToLogin();
+            return $this->redirectToLogin();
         }
 
-        // Очищення сесії чату
         Session::set('chat', []);
-
-        // Перенаправлення назад до гри
-        header('Location: index.php?action=play');
-        exit;
+        $this->redirect('play');
     }
 
-    // Відображення статистики користувача
     public function stats()
     {
         if (!$this->isUserLoggedIn()) {
-            $this->redirectToLogin();
+            return $this->redirectToLogin();
         }
 
-        $userId = Session::get('user_id');
-        $stats = $this->gameModel->getUserStats($userId);
-
+        $stats = $this->gameModel->getUserStats(Session::get('user_id'));
         include '../views/game/stats.php';
     }
 
-    // Метод для початку гри
     public function start()
     {
         if (!$this->isUserLoggedIn()) {
-            $this->redirectToLogin();
+            return $this->redirectToLogin();
         }
 
-        // Ініціалізація чату
         Session::set('chat', []);
 
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            // Отримання параметрів гри
             $mode = $_POST['mode'];
             $size = (int)$_POST['size'];
             $difficulty = $_POST['difficulty'] ?? 'easy';
             $playerSymbol = $_POST['player_symbol'] ?? 'X';
-
-            // Символ бота визначається автоматично
             $botSymbol = $playerSymbol === 'X' ? 'O' : '#';
 
-            // Збереження параметрів у сесії
-            Session::set('mode', $mode);
-            Session::set('board_size', $size);
-            Session::set('difficulty', $difficulty);
-            Session::set('player_symbol', $playerSymbol);
-            Session::set('bot_symbol', $botSymbol);
-            Session::set('board', array_fill(0, $size, array_fill(0, $size, '')));
-            Session::set('current_turn', $playerSymbol);
-            Session::set('turn_start_time', time());
+            Session::setMultiple([
+                'mode' => $mode,
+                'board_size' => $size,
+                'difficulty' => $difficulty,
+                'player_symbol' => $playerSymbol,
+                'bot_symbol' => $botSymbol,
+                'board' => array_fill(0, $size, array_fill(0, $size, '')),
+                'current_turn' => $playerSymbol,
+                'turn_start_time' => time()
+            ]);
 
-            // Перенаправлення до гри
-            header('Location: index.php?action=play');
-            exit;
+            $this->redirect('play');
         }
 
         include '../views/game/start.php';
     }
 
-    // Основний метод гри
     public function play()
     {
         if (!$this->isUserLoggedIn()) {
-            $this->redirectToLogin();
+            return $this->redirectToLogin();
         }
 
         $board = Session::get('board');
@@ -150,139 +114,126 @@ class GameController
         $playerSymbol = Session::get('player_symbol', 'X');
         $botSymbol = Session::get('bot_symbol', 'O');
 
-        $turnStart = Session::get('turn_start_time');
-        $elapsed = time() - $turnStart;
-
-        // Обробка тайм-ауту ходу
-        if ($elapsed > 10) {
+        if ((time() - Session::get('turn_start_time')) > 10) {
             if ($mode === 'bot' && $turn === $playerSymbol) {
-                $this->gameModel->saveResult(Session::get('user_id'), null, null, $size);
-                Session::set('message', 'Час на хід вичерпано! Бот переміг!');
-                header('Location: index.php?action=result');
-                exit;
+                $this->endGame(null, 'Час на хід вичерпано! Бот переміг!');
             } else {
-                $nextTurn = ($turn === $playerSymbol) ? $botSymbol : $playerSymbol;
-                Session::set('current_turn', $nextTurn);
+                Session::set('current_turn', $turn === $playerSymbol ? $botSymbol : $playerSymbol);
                 Session::set('turn_start_time', time());
                 Session::set('message', 'Час на хід вичерпано! Хід передано.');
-                header('Location: index.php?action=play');
-                exit;
+                $this->redirect('play');
             }
         }
 
-        // Обробка ходу гравця
-        if (isset($_GET['row']) && isset($_GET['col'])) {
-            $row = (int)$_GET['row'];
-            $col = (int)$_GET['col'];
-
-            if ($board[$row][$col] === '') {
-                $board[$row][$col] = $turn;
-                Session::set('board', $board);
-                Session::set('turn_start_time', time());
-
-                if ($this->checkWin($board, $turn, $size)) {
-                    $this->gameModel->saveResult(Session::get('user_id'), null, ($turn == 'X' ? Session::get('user_id') : null), $size);
-                    Session::set('message', "$turn переміг!");
-                    header('Location: index.php?action=result');
-                    exit;
-                } elseif ($this->checkDraw($board)) {
-                    $this->gameModel->saveResult(Session::get('user_id'), null, null, $size);
-                    Session::set('message', "Нічия!");
-                    header('Location: index.php?action=result');
-                    exit;
-                }
-
-                // Хід бота, якщо режим відповідний
-                if ($mode === 'bot' && $turn === $playerSymbol) {
-                    $this->botMove();
-                    $board = Session::get('board');
-
-                    if ($this->checkWin($board, $botSymbol, $size)) {
-                        $this->gameModel->saveResult(Session::get('user_id'), null, null, $size);
-                        Session::set('message', "Бот переміг!");
-                        header('Location: index.php?action=result');
-                        exit;
-                    } elseif ($this->checkDraw($board)) {
-                        $this->gameModel->saveResult(Session::get('user_id'), null, null, $size);
-                        Session::set('message', "Нічия!");
-                        header('Location: index.php?action=result');
-                        exit;
-                    }
-
-                    Session::set('current_turn', $playerSymbol);
-                    Session::set('turn_start_time', time());
-                } else {
-                    Session::set('current_turn', $turn === $playerSymbol ? $botSymbol : $playerSymbol);
-                    Session::set('turn_start_time', time());
-                }
-            }
+        if (isset($_GET['row'], $_GET['col'])) {
+            $this->handlePlayerMove((int)$_GET['row'], (int)$_GET['col']);
         }
 
         include '../views/game/board.php';
     }
 
-    // Відображення результатів гри
     public function result()
     {
         include '../views/game/result.php';
     }
 
-    // Допоміжний метод: перевірка, чи користувач увійшов
-    private function isUserLoggedIn()
+    private function isUserLoggedIn(): bool
     {
         return Session::get('user_id') !== null;
     }
 
-    // Допоміжний метод: перенаправлення на сторінку входу
     private function redirectToLogin()
     {
-        header('Location: index.php?action=login');
+        $this->redirect('login');
+    }
+
+    private function redirect(string $action)
+    {
+        header("Location: index.php?action={$action}");
         exit;
     }
 
-    // Перевірка перемоги
-    private function checkWin($board, $symbol, $size)
+    private function endGame(?int $winnerId, string $message)
+    {
+        $this->gameModel->saveResult(Session::get('user_id'), null, $winnerId, Session::get('board_size'));
+        Session::set('message', $message);
+        $this->redirect('result');
+    }
+
+    private function handlePlayerMove(int $row, int $col)
+    {
+        $board = Session::get('board');
+        $turn = Session::get('current_turn');
+        $mode = Session::get('mode');
+        $size = Session::get('board_size');
+        $playerSymbol = Session::get('player_symbol');
+        $botSymbol = Session::get('bot_symbol');
+
+        if ($board[$row][$col] === '') {
+            $board[$row][$col] = $turn;
+            Session::set('board', $board);
+            Session::set('turn_start_time', time());
+
+            if ($this->checkWin($board, $turn, $size)) {
+                $this->endGame($turn === $playerSymbol ? Session::get('user_id') : null, "$turn переміг!");
+            } elseif ($this->checkDraw($board)) {
+                $this->endGame(null, "Нічия!");
+            }
+
+            if ($mode === 'bot' && $turn === $playerSymbol) {
+                $this->botMove();
+                $board = Session::get('board');
+
+                if ($this->checkWin($board, $botSymbol, $size)) {
+                    $this->endGame(null, "Бот переміг!");
+                } elseif ($this->checkDraw($board)) {
+                    $this->endGame(null, "Нічия!");
+                }
+
+                Session::set('current_turn', $playerSymbol);
+            } else {
+                Session::set('current_turn', $turn === $playerSymbol ? $botSymbol : $playerSymbol);
+            }
+        }
+    }
+
+    private function checkWin(array $board, string $symbol, int $size): bool
     {
         for ($i = 0; $i < $size; $i++) {
             if (count(array_unique($board[$i])) === 1 && $board[$i][0] === $symbol) return true;
             if (count(array_unique(array_column($board, $i))) === 1 && $board[0][$i] === $symbol) return true;
         }
 
+        return $this->checkDiagonals($board, $symbol, $size);
+    }
+
+    private function checkDiagonals(array $board, string $symbol, int $size): bool
+    {
         $diag1 = $diag2 = true;
         for ($i = 0; $i < $size; $i++) {
             if ($board[$i][$i] !== $symbol) $diag1 = false;
             if ($board[$i][$size - $i - 1] !== $symbol) $diag2 = false;
         }
-
         return $diag1 || $diag2;
     }
 
-    // Перевірка нічиєї
-    private function checkDraw($board)
+    private function checkDraw(array $board): bool
     {
         foreach ($board as $row) {
-            if (in_array('', $row)) {
-                return false;
-            }
+            if (in_array('', $row)) return false;
         }
         return true;
     }
 
-    // Хід бота
     private function botMove()
     {
         $board = Session::get('board');
         $size = Session::get('board_size');
         $difficulty = Session::get('difficulty', 'easy');
-        $botSymbol = Session::get('bot_symbol', 'O');
-        $userSymbol = Session::get('player_symbol', 'X');
-
-        $move = null;
+        $botSymbol = Session::get('bot_symbol');
+        $userSymbol = Session::get('player_symbol');
 
         switch ($difficulty) {
-            case 'easy':
-                $move = $this->firstAvailableMove($board);
-                break;
             case 'medium':
                 $move = $this->mediumAI($board, $botSymbol, $userSymbol);
                 break;
@@ -300,20 +251,17 @@ class GameController
         }
     }
 
-    private function firstAvailableMove($board)
+    private function firstAvailableMove(array $board): ?array
     {
-        $size = count($board);
-        for ($i = 0; $i < $size; $i++) {
-            for ($j = 0; $j < $size; $j++) {
-                if ($board[$i][$j] === '') {
-                    return [$i, $j];
-                }
+        foreach ($board as $i => $row) {
+            foreach ($row as $j => $cell) {
+                if ($cell === '') return [$i, $j];
             }
         }
         return null;
     }
 
-    private function mediumAI($board, $botSymbol, $userSymbol)
+    private function mediumAI(array $board, string $botSymbol, string $userSymbol): ?array
     {
         $size = count($board);
         for ($i = 0; $i < $size; $i++) {
@@ -330,7 +278,7 @@ class GameController
         return $this->firstAvailableMove($board);
     }
 
-    private function minimaxMove($board, $player)
+    private function minimaxMove(array $board, string $player): array
     {
         $opponent = $player === 'X' ? 'O' : 'X';
         $bestScore = -INF;
@@ -349,7 +297,7 @@ class GameController
         return ['move' => $bestMove, 'score' => $bestScore];
     }
 
-    private function minimax($board, $isMax, $player, $opponent)
+    private function minimax(array $board, bool $isMax, string $player, string $opponent): int
     {
         $size = count($board);
 
@@ -369,13 +317,12 @@ class GameController
         return $best;
     }
 
-    private function getAvailableMoves($board)
+    private function getAvailableMoves(array $board): array
     {
         $moves = [];
-        $size = count($board);
-        for ($i = 0; $i < $size; $i++) {
-            for ($j = 0; $j < $size; $j++) {
-                if ($board[$i][$j] === '') {
+        foreach ($board as $i => $row) {
+            foreach ($row as $j => $cell) {
+                if ($cell === '') {
                     $moves[] = [$i, $j];
                 }
             }
@@ -384,3 +331,4 @@ class GameController
     }
 }
 ?>
+
